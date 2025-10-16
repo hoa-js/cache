@@ -18,7 +18,7 @@ const app = new Hoa()
 app.use(cache())
 
 app.use(async (ctx) => {
-  ctx.res.body = `Hello, ${name}!`
+  ctx.res.body = `Hello, Hoa!`
 })
 
 export default app

@@ -123,6 +123,24 @@ describe('Cache Middleware', () => {
     expect(response.headers.get('cache-control')).toBe('private, max-age=20')
   })
 
+  app.get('/header2/:path',
+    cache({ wait: true, cacheName: 'hoa-app-header-2', cacheControl: 'public' }),
+    (ctx) => {
+      ctx.res.headers = ctx.req.headers
+      ctx.res.body = 'header2'
+    }
+  )
+
+  it('Should append directive without value to Cache-Control', async () => {
+    const response = await app.fetch(new Request('http://localhost/header2/merge', {
+      headers: { 'Cache-Control': 'private' }
+    }))
+    const res = await response.text()
+    expect(res).not.toBeNull()
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('private, public')
+  })
+
   app.get('/vary/:path',
     cache({
       wait: true,
@@ -152,7 +170,7 @@ describe('Cache Middleware', () => {
     const res = await response.text()
     expect(res).not.toBeNull()
     expect(response.status).toBe(200)
-    expect(response.headers.get('vary')).toBe('accept,accept-encoding')
+    expect(response.headers.get('vary')).toBe('accept, accept-encoding')
   })
 
   it('Should deduplicate when merge header vary values', async () => {
@@ -162,7 +180,7 @@ describe('Cache Middleware', () => {
     const res = await response.text()
     expect(res).not.toBeNull()
     expect(response.status).toBe(200)
-    expect(response.headers.get('vary')).toBe('accept,accept-encoding')
+    expect(response.headers.get('vary')).toBe('accept, accept-encoding')
   })
 
   it('Should prioritize the "*" Vary header from handler over any set by middleware', async () => {
@@ -175,6 +193,30 @@ describe('Cache Middleware', () => {
     expect(response.headers.get('vary')).toBe('*')
   })
 
+  app.get('/vary-str/:path',
+    cache({
+      wait: true,
+      cacheName: 'hoa-app-vary-str',
+      cacheControl: 'max-age=20',
+      vary: 'Accept-Encoding'
+    }),
+    (ctx) => {
+      ctx.res.headers = ctx.req.headers
+      ctx.res.body = 'vary-str'
+    }
+  )
+
+  it('Should handle string vary option and merge with handler header', async () => {
+    const response = await app.fetch(new Request('http://localhost/vary-str/merge', {
+      headers: { Vary: 'Accept' }
+    }))
+    const res = await response.text()
+    expect(res).not.toBeNull()
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('max-age=20')
+    expect(response.headers.get('vary')).toBe('accept, accept-encoding')
+  })
+
   app.get('/res/:type',
     cache({
       wait: true,
@@ -185,7 +227,8 @@ describe('Cache Middleware', () => {
     (ctx) => {
       ctx.res.headers = ctx.req.headers
       let body
-      switch (ctx.req.params.type) {
+      const typeParam = ctx.req.params?.type ?? 'Response'
+      switch (typeParam) {
         case 'Blob':
           body = new Blob(['{"a":1}'], { type: 'application/json' })
           break
@@ -260,7 +303,9 @@ describe('Cache Middleware', () => {
     }),
     (ctx) => {
       ctx.res.body = 'cached'
-      ctx.res.status = +ctx.req.params.code
+      const codeParam = ctx.req.params?.code ?? '200'
+      const code = Number(codeParam)
+      ctx.res.status = code
     }
   )
 
@@ -300,7 +345,9 @@ describe('Cache Middleware', () => {
     }),
     (ctx) => {
       ctx.res.body = 'cached'
-      ctx.res.status = +ctx.req.params.code
+      const codeParam = ctx.req.params?.code ?? '200'
+      const code = Number(codeParam)
+      ctx.res.status = code
     }
   )
 
@@ -321,23 +368,14 @@ describe('Cache Middleware', () => {
     expect(response.status).toBe(code)
     expect(response.headers.get('cache-control')).not.toBe('max-age=20')
   })
-
-  // it.each([
-  //   100, 101, 102, 103
-  // ])('Should not cache %i in custom cacheable status codes', async (code) => {
-  //   await app.fetch(new Request('http://localhost/custom/' + code))
-  //   const response = await app.fetch(new Request('http://localhost/custom/' + code))
-  //   expect(response.status).toBe(code)
-  //   expect(response.headers.get('cache-control')).not.toBe('max-age=20')
-  // })
 })
 
 describe('', () => {
   it('Should not be enabled if caches is not defined', async () => {
-    globalThis.caches = undefined
+    (globalThis as any).caches = undefined
     const app = new Hoa()
     app.extend(router())
-    app.use(cache({ cacheName: 'hoa-cache', cacheControl: 'max-age=10' }))
+    app.use(cache({ cacheName: 'cache', cacheControl: 'max-age=10' }))
     app.get('/', (ctx) => {
       ctx.res.body = 'cached'
     })
@@ -347,5 +385,70 @@ describe('', () => {
     expect(res).not.toBeNull()
     expect(response.status).toBe(200)
     expect(response.headers.get('cache-control')).toBe(null)
+  })
+
+  it('Should write to cache via fallback when no wait and no executionCtx', async () => {
+    // restore caches mock locally (module import is cached; rebuild here)
+    const memoryCache = new Map<string, Map<string | Request, Response>>()
+    globalThis.caches = {
+      async open (name: string) {
+        let m = memoryCache.get(name)
+        if (!m) {
+          memoryCache.set(name, m = new Map())
+        }
+        return {
+          async keys () {
+            return Promise.resolve([...m.keys()])
+          },
+          async match (key: string | Request) {
+            return Promise.resolve(m.get(key))
+          },
+          async delete (key: string | Request) {
+            const isDelete = m.delete(key)
+            return Promise.resolve(isDelete)
+          },
+          async put (key: string | Request, value: Response) {
+            return new Promise(resolve => {
+              setTimeout(() => {
+                m.set(key, value)
+                resolve(undefined)
+              }, 10)
+            })
+          },
+        }
+      },
+    } as any
+    // Setup app without wait and without passing executionCtx to fetch
+    const app = new Hoa()
+    app.extend(router())
+    app.get('/fallback/',
+      cache({ cacheName: 'hoa-app-fallback', keyGenerator: () => 'fallback-key' }),
+      (ctx) => {
+        ctx.res.body = 'ok'
+      }
+    )
+    const response = await app.fetch(new Request('http://localhost/fallback/'))
+    expect(response.status).toBe(200)
+    // allow async cache.put to resolve
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const cacheStore = await caches.open('hoa-app-fallback')
+    const keys = Array.from(await cacheStore.keys())
+    expect(keys).toContain('fallback-key')
+  })
+
+  it('Should use default options when middleware called without config', async () => {
+    const app = new Hoa()
+    app.extend(router())
+    app.use(cache())
+    app.get('/default-cache/', (ctx) => {
+      ctx.res.body = 'ok'
+    })
+    const res1 = await app.fetch(new Request('http://localhost/default-cache/'))
+    expect(res1.status).toBe(200)
+    // allow async cache.put to resolve for default wait=false
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const cacheStore = await caches.open('cache')
+    const keys = Array.from(await cacheStore.keys())
+    expect(keys.length).toBeGreaterThan(0)
   })
 })

@@ -19,7 +19,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "lint": "eslint",
+    "lint": "eslint .",
     "type-check": "tsc --noEmit",
     "build": "tsup",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
@@ -40,6 +40,7 @@
   "devDependencies": {
     "@commitlint/cli": "20.1.0",
     "@commitlint/config-conventional": "20.0.0",
+    "@hoajs/router": "0.3.0",
     "@jest/globals": "^30.2.0",
     "@types/jest": "30.0.0",
     "eslint": "9.37.0",
@@ -57,8 +58,5 @@
   },
   "engines": {
     "node": ">=20"
-  },
-  "dependencies": {
-    "@hoajs/router": "^0.3.0"
   }
 }
